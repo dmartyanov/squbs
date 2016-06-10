@@ -106,8 +106,8 @@ object UnicomplexBoot extends LazyLogging {
     resolveCubes(jarConfigs, boot.copy(jarNames = jarNames))
   }
 
-  private[unicomplex] def scanResources(resources: Seq[URL], withClassPath: Boolean = true)(boot: UnicomplexBoot):
-  UnicomplexBoot = {
+  private[unicomplex] def scanResources(resources: Seq[URL],
+                                        withClassPath: Boolean = true)(boot: UnicomplexBoot): UnicomplexBoot = {
     val cpResources: Seq[URL] =
       if (withClassPath) {
         val loader = getClass.getClassLoader
@@ -151,9 +151,7 @@ object UnicomplexBoot extends LazyLogging {
             if (confFile.isFile) Option(new InputStreamReader(new FileInputStream(confFile), "UTF-8"))
             else None
           }
-          (configExtensions map getConfFile find {
-            _ != None
-          }).flatten
+          (configExtensions map getConfFile find { _.isDefined }).flatten
 
         } else if (jarFile.isFile) {
 
@@ -166,9 +164,7 @@ object UnicomplexBoot extends LazyLogging {
               Option(new InputStreamReader(jar.getInputStream(confFile), "UTF-8"))
             else None
           }
-          (configExtensions map getConfFile find {
-            _ != None
-          }).flatten
+          (configExtensions map getConfFile find { _.isDefined }).flatten
         } else None
 
       configReader map ConfigFactory.parseReader
@@ -250,9 +246,7 @@ object UnicomplexBoot extends LazyLogging {
       (cube.info.name, cube.info.fullName)
     } groupBy (_._1) mapValues { seq =>
       (seq map (_._2)).toSet
-    } filter {
-      _._2.size > 1
-    }
+    } filter { _._2.size > 1 }
 
     if (aliasConflicts.isEmpty) cubeList
     else {
@@ -292,9 +286,9 @@ object UnicomplexBoot extends LazyLogging {
 
     def startActor(actorConfig: Config): Option[(String, String, String, Class[_])] = {
       val className = actorConfig getString "class-name"
-      val name = actorConfig get[String]("name", className substring (className.lastIndexOf('.') + 1))
-      val withRouter = actorConfig get[Boolean]("with-router", false)
-      val initRequired = actorConfig get[Boolean]("init-required", false)
+      val name = actorConfig.get[String]("name", className substring (className.lastIndexOf('.') + 1))
+      val withRouter = actorConfig.get[Boolean]("with-router", false)
+      val initRequired = actorConfig.get[Boolean]("init-required", false)
 
       try {
         val clazz = Class.forName(className, true, getClass.getClassLoader)
@@ -353,9 +347,7 @@ object UnicomplexBoot extends LazyLogging {
                           ps: PipelineSetting, initRequired: Boolean) = {
       try {
         val actorClass = clazz asSubclass classOf[Actor]
-        def actorCreator: Actor = WebContext.createWithContext[Actor](webContext) {
-          actorClass.newInstance()
-        }
+        def actorCreator: Actor = WebContext.createWithContext[Actor](webContext) { actorClass.newInstance() }
         val props = Props(classOf[TypedCreatorFunctionConsumer], clazz, actorCreator _)
         val className = clazz.getSimpleName
         val actorName =
@@ -441,15 +433,10 @@ object UnicomplexBoot extends LazyLogging {
     val listeners = config.root.toSeq collect {
       case (n, v: ConfigObject) if v.toConfig.getOption[String]("type").contains("squbs.listener") => (n, v.toConfig)
     }
-    // Check for duplicates
-    val listenerMap = mutable.Map.empty[String, Config]
-    listeners foreach { case (name, cfg) =>
-      listenerMap.get(name) match {
-        case Some(_) => logger.warn(s"Duplicate listener $name already declared. Ignoring.")
-        case None => listenerMap += name -> cfg
-      }
-    }
-    listenerMap.toMap
+
+    resolveDuplicates[Config](listeners, (name, conf, c) =>
+      logger.warn(s"Duplicate listener $name already declared. Ignoring.")
+    )
   }
 
   def findListenerAliases(listeners: Map[String, Config]): Map[String, String] = {
@@ -457,28 +444,25 @@ object UnicomplexBoot extends LazyLogging {
       val aliasNames = config.get[Seq[String]]("aliases", Seq.empty[String])
       (name, name) +: (aliasNames map ((_, name)))
     }
-    val aliasMap = mutable.Map.empty[String, String]
 
-    // Check for duplicate aliases
-    for {
-      group <- aliases
-      (alias, listener) <- group
-    } {
-      aliasMap.get(alias) match {
-        case Some(l) =>
-          logger.warn(s"Duplicate alias $alias for listener $listener already declared for listener $l. Ignoring.")
-        case None => aliasMap += alias -> listener
-      }
+    resolveDuplicates[String](aliases.toSeq.flatten, (alias, listener, l) =>
+      logger.warn(s"Duplicate alias $alias for listener $listener already declared for listener $l. Ignoring.")
+    )
+  }
+
+  def resolveDuplicates[T](in: Seq[(String, T)], duplicateHandler: (String, T, T) => Unit): Map[String, T] = {
+    in.groupBy(_._1).map {
+      case (key, Seq((k, v))) => key -> v
+      case (key, head::tail) =>
+        tail.foreach { case (k, ass) => duplicateHandler(k, ass, head._2)}
+        key -> head._2
     }
-    aliasMap.toMap
   }
 
   def findListeners(config: Config, cubes: Seq[CubeInit]) = {
     val demandedListeners =
       for {
-        routes <- cubes.map {
-          _.components.get(StartupType.SERVICES)
-        }.collect { case Some(routes) => routes }.flatten
+        routes <- cubes.map { _.components.get(StartupType.SERVICES) }.collect { case Some(routes) => routes }.flatten
         routeListeners <- routes get[Seq[String]]("listeners", Seq("default-listener"))
         if routeListeners != "*" // Filter out wildcard listener bindings, not starting those.
       } yield {
@@ -558,7 +542,7 @@ case class UnicomplexBoot private[unicomplex](startTime: Timestamp,
     val initSeq = cubes.flatMap { cube =>
       cube.components.getOrElse(StartupType.EXTENSIONS, Seq.empty) map { config =>
         val className = config getString "class-name"
-        val seqNo = config get[Int]("sequence", Int.MaxValue)
+        val seqNo = config.get[Int]("sequence", Int.MaxValue)
         (seqNo, className, cube)
       }
     }.sortBy(_._1)
@@ -690,9 +674,7 @@ case class UnicomplexBoot private[unicomplex](startTime: Timestamp,
   def loadExtension(seqNo: Int, className: String, cube: CubeInit): Extension = {
     try {
       val clazz = Class.forName(className, true, getClass.getClassLoader)
-      val extLifecycle = ExtensionLifecycle(this) {
-        clazz.asSubclass(classOf[ExtensionLifecycle]).newInstance
-      }
+      val extLifecycle = ExtensionLifecycle(this) { clazz.asSubclass(classOf[ExtensionLifecycle]).newInstance }
       Extension(cube.info, Some(extLifecycle), Seq.empty)
     } catch {
       case e: Exception =>

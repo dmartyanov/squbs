@@ -252,5 +252,10 @@ class UnicomplexBootSpec extends FunSpecLike with Matchers {
       Try(finalConfig.getConfig("squbs")).toOption should not be (None)
       finalConfig.getBoolean("configTest") should be (true)
     }
+
+    it ("should resolve duplicates") {
+      val s1 = Seq(("k1", "v1"), ("k2", "v2"), ("k3", "v3"), ("k2", "v3"), ("k1", "v3"), ("k1", "v2"))
+      resolveDuplicates[String](s1, (k, ass, v) => ()) shouldBe Map("k1" -> "v1", "k2" -> "v2", "k3" -> "v3")
+    }
   }
 }
